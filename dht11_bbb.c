@@ -1,143 +1,124 @@
+// dht11_bbb.c
+// DHT11 reader for BeagleBone Black using mmap GPIO and DMTimer
 
-#include <gpiod.h>
 #include <stdio.h>
-#include <unistd.h>
-#include <time.h>
 #include <stdint.h>
 #include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <time.h>
 
-#define CHIP_NAME "gpiochip1"
-#define LINE_NUM 28  // GPIO1_28 = GPIO60 = P9_12
+#define GPIO1_BASE        0x4804C000
+#define GPIO_SIZE         0x1000
+#define GPIO_OE           0x134
+#define GPIO_DATAIN       0x138
+#define GPIO_SETDATAOUT   0x194
+#define GPIO_CLEARDATAOUT 0x190
+#define GPIO_INDEX        28    // GPIO1_28
 
-// Microsecond delay using nanosleep
-void delay_us(unsigned int us) {
-    struct timespec ts;
-    ts.tv_sec = 0;
-    ts.tv_nsec = us * 1000 / 3;
-    nanosleep(&ts, NULL);
+#define DMTIMER2_BASE     0x48040000
+#define DMTIMER_SIZE      0x1000
+#define DMTIMER_TCLR      0x038
+#define DMTIMER_TCRR      0x03C
+#define DMTIMER_TLDR      0x040
+#define DMTIMER_TIOCP_CFG 0x010
+#define DMTIMER_TSICR     0x054
+
+#define TIMEOUT_US        100
+#define BIT_THRESHOLD_US  40
+
+static volatile uint32_t *gpio = NULL;
+static volatile uint32_t *dmtimer = NULL;
+
+static int init_gpio() {
+    int fd = open("/dev/mem", O_RDWR | O_SYNC);
+    if (fd < 0) return -1;
+    gpio = mmap(NULL, GPIO_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, GPIO1_BASE);
+    close(fd);
+    return gpio == MAP_FAILED ? -1 : 0;
 }
 
-// Time difference in microseconds
-long time_diff_us(struct timespec *start, struct timespec *end) {
-    return (end->tv_sec - start->tv_sec) * 1000000 +
-           (end->tv_nsec - start->tv_nsec) / 1000;
-}
-
-// Wait for GPIO level or timeout
-int wait_for_level(struct gpiod_line *line, int level, int timeout_us) {
-    struct timespec start, now;
-    clock_gettime(CLOCK_MONOTONIC, &start);
-
-    while (1) {
-        int val = gpiod_line_get_value(line);
-        if (val < 0) return -1;
-        if (val == level) return 0;
-
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        if (time_diff_us(&start, &now) > timeout_us) return -2;
-    }
-}
-
-int read_dht11(struct gpiod_line *line, uint8_t data[5]) {
-    memset(data, 0, 5);
-
-    // Wait for response: LOW 80us, HIGH 80us
-    if (wait_for_level(line, 0, 100) != 0){
-        perror("Failed to wait for LOW level: HANDSHAKE FAILED");
-        return -1;
-    } else {
-        printf("DHT11 LOW level detected\n");
-    }
-    if (wait_for_level(line, 1, 100) != 0) {
-        perror("Failed to wait for HIGH level: HANDSHAKE FAILED");
-        return -1;
-    } else {
-        printf("DHT11 HIGH level detected\n");
-    }
-
-    // Start receiving 40 bits
-    for (int i = 0; i < 40; i++) {
-        if (wait_for_level(line, 0, 100) != 0){
-            perror("Failed to wait for LOW level: DATA READ FAILED");
-            return -1;
-        } else {
-            printf("DHT11 LOW level detected for bit %d\n", i);
-        }
-        struct timespec start, end;
-        if (wait_for_level(line, 1, 100) != 0) {
-            perror("Failed to wait for HIGH level: DATA READ FAILED");
-            return -1;
-        } else {
-            printf("DHT11 HIGH level detected for bit %d\n", i);
-        }
-        clock_gettime(CLOCK_MONOTONIC, &start);
-        if (wait_for_level(line, 0, 100) != 0){
-            perror("Failed to wait for LOW level: DATA READ FAILED");
-            return -1;
-        } else {
-            printf("DHT11 LOW level detected for bit %d\n", i);
-        } // Wait end of HIGH pulse
-        clock_gettime(CLOCK_MONOTONIC, &end);
-
-        long pulse_width = time_diff_us(&start, &end);
-        data[i / 8] <<= 1;
-        if (pulse_width > 40) data[i / 8] |= 1;  // 0: ~26us, 1: ~70us
-    }
-
-    uint8_t sum = data[0] + data[1] + data[2] + data[3];
-    if (sum != data[4]) {
-        printf("Checksum error: expected %d, got %d\n", sum, data[4]);
-        for (int i = 0; i < 5; i++) {
-            printf("data[%d]: %d\n", i, data[i]);
-        }
-        return -2;  // Checksum error
-    }
-
+static int init_dmtimer() {
+    int fd = open("/dev/mem", O_RDWR | O_SYNC);
+    if (fd < 0) return -1;
+    dmtimer = mmap(NULL, DMTIMER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, DMTIMER2_BASE);
+    close(fd);
+    if (dmtimer == MAP_FAILED) return -1;
+    dmtimer[DMTIMER_TIOCP_CFG / 4] = 0x2;
+    while (dmtimer[DMTIMER_TIOCP_CFG / 4] & 1);
+    dmtimer[DMTIMER_TSICR / 4] = 0x0;
+    dmtimer[DMTIMER_TCLR / 4] = 0x0;
+    dmtimer[DMTIMER_TLDR / 4] = 0;
+    dmtimer[DMTIMER_TCRR / 4] = 0;
+    dmtimer[DMTIMER_TCLR / 4] = 0x3;
     return 0;
 }
 
+static void delay_us(unsigned int us) {
+    uint32_t start = dmtimer[DMTIMER_TCRR / 4];
+    while ((dmtimer[DMTIMER_TCRR / 4] - start) < us * 24);
+}
+
+static void set_input()  { gpio[GPIO_OE / 4] |=  (1 << GPIO_INDEX); }
+static void set_output() { gpio[GPIO_OE / 4] &= ~(1 << GPIO_INDEX); }
+static void digital_write(int val) {
+    if (val)
+        gpio[GPIO_SETDATAOUT / 4] = (1 << GPIO_INDEX);
+    else
+        gpio[GPIO_CLEARDATAOUT / 4] = (1 << GPIO_INDEX);
+}
+
+static int digital_read() {
+    return (gpio[GPIO_DATAIN / 4] & (1 << GPIO_INDEX)) ? 1 : 0;
+}
+
+static int wait_level(int level, int timeout_us) {
+    struct timespec start, now;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    while (1) {
+        if (digital_read() == level) return 0;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        long dt = (now.tv_sec - start.tv_sec) * 1000000 + (now.tv_nsec - start.tv_nsec) / 1000;
+        if (dt > timeout_us) return -1;
+    }
+}
+
+static int read_dht11(uint8_t data[5]) {
+    memset(data, 0, 5);
+    set_output();
+    digital_write(0);
+    delay_us(18000);
+    digital_write(1);
+    delay_us(40);
+    set_input();
+
+    if (wait_level(0, TIMEOUT_US) < 0 || wait_level(1, TIMEOUT_US) < 0) return -1;
+
+    for (int i = 0; i < 40; i++) {
+        if (wait_level(0, TIMEOUT_US) < 0 || wait_level(1, TIMEOUT_US) < 0) return -1;
+        struct timespec t1, t2;
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        while (digital_read()) {
+            clock_gettime(CLOCK_MONOTONIC, &t2);
+            if (((t2.tv_sec - t1.tv_sec) * 1000000 + (t2.tv_nsec - t1.tv_nsec) / 1000) > TIMEOUT_US) return -1;
+        }
+        long pulse = (t2.tv_sec - t1.tv_sec) * 1000000 + (t2.tv_nsec - t1.tv_nsec) / 1000;
+        int bit = (pulse > BIT_THRESHOLD_US);
+        data[i / 8] <<= 1;
+        data[i / 8] |= bit;
+    }
+
+    uint8_t chk = data[0] + data[1] + data[2] + data[3];
+    return (chk & 0xFF) == data[4] ? 0 : -2;
+}
+
 int main() {
-    struct gpiod_chip *chip = gpiod_chip_open_by_name(CHIP_NAME);
-    if (!chip) {
-        perror("Open chip failed");
-        return 1;
-    }
-
-    struct gpiod_line *line = gpiod_chip_get_line(chip, LINE_NUM);
-    if (!line) {
-        perror("Get line failed");
-        gpiod_chip_close(chip);
-        return 1;
-    }
-
-    if (gpiod_line_request_output(line, "dht11", 1) < 0) {
-        perror("Request output failed");
-        gpiod_chip_close(chip);
-        return 1;
-    }
-
-    // Start signal
-    gpiod_line_set_value(line, 0);
-    usleep(20000);  // 20 ms
-    gpiod_line_set_value(line, 1);
-    // delay_us(30);
-
-    gpiod_line_release(line);
-    if (gpiod_line_request_input(line, "dht11") < 0) {
-        perror("Request input failed");
-        gpiod_chip_close(chip);
-        return 1;
-    }
-
-    uint8_t data[5];
-    if (read_dht11(line, data) == 0) {
-        printf("Humidity: %d.%d%%\n", data[0], data[1]);
-        printf("Temperature: %d.%d°C\n", data[2], data[3]);
-    } else {
-        printf("Failed to read DHT11 data or checksum error\n");
-    }
-
-    gpiod_line_release(line);
-    gpiod_chip_close(chip);
+    if (init_gpio() < 0 || init_dmtimer() < 0) return 1;
+    uint8_t d[5];
+    if (read_dht11(d) == 0)
+        printf("Humidity: %d.%d%%  Temperature: %d.%d°C\n", d[0], d[1], d[2], d[3]);
+    else
+        printf("DHT11 read failed\n");
     return 0;
 }
