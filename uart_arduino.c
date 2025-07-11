@@ -27,8 +27,8 @@ int main()
     options.c_cflag |= CS8;       // 8 data bits
     tcsetattr(fd, TCSANOW, &options);
 
-    // send to Arduino
-    const char *msg = "hello arduino\n";
+    // send to ESP32
+    const char *msg = "hello ESP32\n";
     int n = write(fd, msg, strlen(msg));
     if (n < 0) {
         perror("write");
@@ -36,7 +36,7 @@ int main()
         printf("Sent: %s\n", msg);
     }
 
-    // read reply from Arduino
+    // read reply from ESP32
     char buf[100];
     n = read(fd, buf, sizeof(buf)-1);
     if (n > 0) {

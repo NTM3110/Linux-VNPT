@@ -1,5 +1,5 @@
 // dht11_bbb.c
-// DHT11 reader for BeagleBone Black using mmap GPIO and DMTimer
+// DHT11 reader for BeagleBone Black using mmap GPIO and DMTimer with retries and improved debug
 
 #include <stdio.h>
 #include <stdint.h>
@@ -25,27 +25,42 @@
 #define DMTIMER_TIOCP_CFG 0x010
 #define DMTIMER_TSICR     0x054
 
-#define TIMEOUT_US        100
-#define BIT_THRESHOLD_US  40
+#define TIMEOUT_US        200
+#define BIT_THRESHOLD_US  35
 
 static volatile uint32_t *gpio = NULL;
 static volatile uint32_t *dmtimer = NULL;
 
 static int init_gpio() {
     int fd = open("/dev/mem", O_RDWR | O_SYNC);
-    if (fd < 0) return -1;
+    if (fd < 0) {
+        perror("open /dev/mem (gpio)");
+        return -1;
+    }
     gpio = mmap(NULL, GPIO_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, GPIO1_BASE);
+    if (gpio == MAP_FAILED) {
+        perror("mmap gpio");
+        close(fd);
+        return -1;
+    }
     close(fd);
-    return gpio == MAP_FAILED ? -1 : 0;
+    return 0;
 }
 
 static int init_dmtimer() {
     int fd = open("/dev/mem", O_RDWR | O_SYNC);
-    if (fd < 0) return -1;
+    if (fd < 0) {
+        perror("open /dev/mem (timer)");
+        return -1;
+    }
     dmtimer = mmap(NULL, DMTIMER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, DMTIMER2_BASE);
+    if (dmtimer == MAP_FAILED) {
+        perror("mmap dmtimer");
+        close(fd);
+        return -1;
+    }
     close(fd);
-    if (dmtimer == MAP_FAILED) return -1;
-    dmtimer[DMTIMER_TIOCP_CFG / 4] = 0x2;
+    dmtimer[DMTIMER_TIOCP_CFG / 4] = 0x3;
     while (dmtimer[DMTIMER_TIOCP_CFG / 4] & 1);
     dmtimer[DMTIMER_TSICR / 4] = 0x0;
     dmtimer[DMTIMER_TCLR / 4] = 0x0;
@@ -115,10 +130,17 @@ static int read_dht11(uint8_t data[5]) {
 
 int main() {
     if (init_gpio() < 0 || init_dmtimer() < 0) return 1;
-    uint8_t d[5];
-    if (read_dht11(d) == 0)
-        printf("Humidity: %d.%d%%  Temperature: %d.%d°C\n", d[0], d[1], d[2], d[3]);
-    else
-        printf("DHT11 read failed\n");
-    return 0;
+
+    for (int attempt = 1; attempt <= 5; attempt++) {
+        printf("Attempt %d...\n", attempt);
+        uint8_t d[5];
+        if (read_dht11(d) == 0) {
+            printf("Humidity: %d.%d%%  Temperature: %d.%d°C\n", d[0], d[1], d[2], d[3]);
+            return 0;
+        }
+        delay_us(1000000); // wait 1s
+    }
+
+    printf("DHT11 read failed after 5 attempts\n");
+    return 1;
 }
