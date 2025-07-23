@@ -1,0 +1,1 @@
+cmd_/home/shou/bbb-sdk/rtl8188eus/8188eu.ko := arm-poky-linux-gnueabi-ld -r -EL -z noexecstack --build-id=sha1  -T scripts/module.lds -o /home/shou/bbb-sdk/rtl8188eus/8188eu.ko /home/shou/bbb-sdk/rtl8188eus/8188eu.o /home/shou/bbb-sdk/rtl8188eus/8188eu.mod.o;  true

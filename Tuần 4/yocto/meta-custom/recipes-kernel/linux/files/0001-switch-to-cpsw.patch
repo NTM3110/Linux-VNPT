@@ -1,0 +1,26 @@
+# diff --git a/arcam335x-bone-common.dtsi b/am335x-bone-common.dtsi
+# index ab323df..abc29f2 100644
+# --- a/am335x-bone-common.dtsi
+# +++ b/am335x-bone-common.dtsi
+# @@ -356,8 +356,9 @@
+ 
+#  &cpsw_port1 {
+#  	phy-handle = <&ethphy0>;
+# -	phy-mode = "mii";
+# +	phy-mode = "rmii";
+#  	ti,dual-emac-pvid = <1>;
+# +	rmii-clock-ext;
+#  };
+ 
+#  &cpsw_port2 {
+# @@ -380,8 +381,8 @@
+#  		reg = <0>;
+#  		/* Support GPIO reset on revision C3 boards */
+#  		reset-gpios = <&gpio1 8 GPIO_ACTIVE_LOW>;
+# -		reset-assert-us = <300>;
+# -		reset-deassert-us = <6500>;
+# +		reset-assert-us = <1000>;
+# +		reset-deassert-us = <20000>;
+#  	};
+#  };
+ 
