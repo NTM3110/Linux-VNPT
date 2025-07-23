@@ -15,7 +15,7 @@
 #define GPIO_DATAIN       0x138
 #define GPIO_SETDATAOUT   0x194
 #define GPIO_CLEARDATAOUT 0x190
-#define GPIO_INDEX        28    // GPIO1_28
+#define GPIO_INDEX        28    // GPIO1_28 = P9_12
 
 #define DMTIMER2_BASE     0x48040000
 #define DMTIMER_SIZE      0x1000
